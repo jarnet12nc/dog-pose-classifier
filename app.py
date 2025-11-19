@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 # ----------------- Config -----------------
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# <<< EDIT THIS if the file name is slightly different
+# <<< MODEL PATH 
 MODEL_PATH = "dog_multitask_resnet18.pt"
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -26,7 +26,7 @@ eval_transform = transforms.Compose([
 # ----------------- Classes -----------------
 pose_class_names = ["sitting", "standing", "lying"]  # adjust if needed
 
-# <<< EDIT THIS: paste your full breed_classes list from the notebook
+# <<< BREED LIST
 breed_classes = [
     "Afghan_hound",
     "African_hunting_dog",
