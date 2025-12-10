@@ -1,23 +1,24 @@
 import io
 import json
 import os
+import zipfile
 
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
+from torch import nn
 from torchvision import models, transforms
 from PIL import Image
 import streamlit as st
 import matplotlib.pyplot as plt
 
-# =========================
+# ------------------
 # Config & constants
-# =========================
+# ------------------
 
 CLASS_NAMES = ["sitting", "standing", "lying"]  # must match training order
 MODEL_PATH = "dog_pose_resnet18.pt"
-METRICS_PATH = "metrics.json"            # optional: validation metrics
+METRICS_PATH = "metrics.json"           # optional: validation metrics
 CONFUSION_MATRIX_PATH = "confusion_matrix.png"  # optional: saved image
 
 # Image transforms (standard ResNet18 / ImageNet-style)
@@ -35,9 +36,9 @@ TRANSFORM = transforms.Compose(
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# =========================
+# ======================
 # Grad-CAM utilities
-# =========================
+# ======================
 
 class GradCAM:
     def __init__(self, model, target_layer):
@@ -72,7 +73,7 @@ class GradCAM:
         weights = self.gradients.mean(dim=(2, 3), keepdim=True)
         cam = (weights * self.activations).sum(dim=1).squeeze()
 
-        # Normalize CAM to [0, 1]
+        # Normalize CAM to [0,1]
         cam = cam.cpu().numpy()
         cam = np.maximum(cam, 0)
         if cam.max() > 0:
@@ -102,9 +103,9 @@ def overlay_heatmap_on_image(pil_img: Image.Image, heatmap: np.ndarray, alpha: f
     return Image.fromarray(overlay)
 
 
-# =========================
+# ------------------
 # Model & helpers
-# =========================
+# ------------------
 
 @st.cache_resource
 def load_model():
@@ -159,53 +160,59 @@ def load_metrics():
         return None
 
 
-# =========================
+# ------------------
+# Session state setup
+# ------------------
+
+def init_session_state():
+    """
+    Initialize session_state keys used across tabs.
+    - last_prediction: dict with label, prob, probs, image_bytes, filename
+    - prediction_log: list of dicts with id, filename, pred, prob, true
+    """
+    if "last_prediction" not in st.session_state:
+        st.session_state.last_prediction = None
+
+    if "prediction_log" not in st.session_state:
+        st.session_state.prediction_log = []  # list of dicts
+
+    if "next_pred_id" not in st.session_state:
+        st.session_state.next_pred_id = 1
+
+
+def add_prediction_to_log(filename: str, label: str, prob: float):
+    """Append a new prediction row to the session prediction log."""
+    entry = {
+        "id": st.session_state.next_pred_id,
+        "filename": filename,
+        "pred": label,
+        "prob": prob,
+        "true": None,  # can be filled later
+    }
+    st.session_state.prediction_log.append(entry)
+    st.session_state.next_pred_id += 1
+
+
+# ------------------
 # Main app
-# =========================
+# ------------------
 
 def main():
     st.set_page_config(
         page_title="Dog Pose Classifier",
         page_icon="🐕",
-        layout="wide",
+        layout="centered",
     )
 
-    # --- Light "Apple-y" styling ---
-    st.markdown(
-        """
-        <style>
-        .block-container {
-            padding-top: 2rem;
-            padding-bottom: 3rem;
-            max-width: 1100px;
-        }
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 0.5rem;
-        }
-        .stTabs [data-baseweb="tab"] {
-            padding: 0.5rem 1.1rem;
-            border-radius: 999px;
-        }
-        .stMetric {
-            background: rgba(255,255,255,0.03);
-            border-radius: 16px;
-            padding: 0.75rem 1rem;
-        }
-        img {
-            border-radius: 18px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    init_session_state()
 
     # ---- Sidebar ----
     st.sidebar.title("How to use")
     st.sidebar.write(
         """
         1. Upload a clear dog photo.  
-        2. The model analyzes it automatically.  
-        3. View the predicted pose and confidence.
+        2. The model predicts the pose.  
+        3. Optional: log the *true* pose and review metrics in the **Evaluation** tab.
         """
     )
 
@@ -222,8 +229,8 @@ def main():
     # ---- Header ----
     st.title("🐕 Dog Pose Classifier")
     st.caption(
-        "Upload a dog photo and let a deep learning model predict whether the dog is "
-        "**sitting**, **standing**, or **lying**."
+        "Upload a dog photo and let a deep learning model predict "
+        "whether the dog is **sitting**, **standing**, or **lying**."
     )
     st.divider()
 
@@ -232,28 +239,20 @@ def main():
         st.stop()
 
     # ---- Tabs ----
-    tab_predict, tab_insights, tab_explain, tab_about = st.tabs(
-        ["🐶 Predict Pose", "📊 Model Insights", "🔍 Explanation", "ℹ️ About"]
+    tab_predict, tab_insights, tab_eval, tab_explain, tab_about = st.tabs(
+        ["🐶 Predict Pose", "📊 Model Insights", "🧪 Evaluation", "🔍 Explanation", "ℹ️ About"]
     )
 
-    # Session state for cross-tab communication
-    if "last_prediction" not in st.session_state:
-        st.session_state.last_prediction = None
-
-    # Live evaluation state (optional real-time metrics)
-    if "eval_records" not in st.session_state:
-        st.session_state.eval_records = []  # list of {"true": ..., "pred": ...}
-
-    if "eval_enabled" not in st.session_state:
-        st.session_state.eval_enabled = False
-
     # =========================
-    # Predict Pose Tab
+    # Predict Pose tab
     # =========================
     with tab_predict:
+        st.subheader("Single image prediction")
+
         uploaded_file = st.file_uploader(
             "Upload a dog image (JPG/PNG)",
             type=["jpg", "jpeg", "png"],
+            key="single_upload",
         )
 
         if uploaded_file is not None:
@@ -264,7 +263,6 @@ def main():
                 st.error("⚠️ That file doesn't look like a valid image.")
                 st.stop()
 
-            # Layout: image left, prediction right
             col_img, col_pred = st.columns([2, 3])
 
             with col_img:
@@ -275,27 +273,29 @@ def main():
                 with st.spinner("Analyzing pose..."):
                     label, prob, probs = predict_pose(model, pil_img)
 
-                # Store in session state
+                # Store in session for other tabs
                 st.session_state.last_prediction = {
                     "label": label,
                     "prob": prob,
                     "probs": probs.tolist(),
                     "image_bytes": uploaded_file.getvalue(),
+                    "filename": uploaded_file.name,
                 }
 
-                # Friendly prediction display
+                # Add to prediction log
+                add_prediction_to_log(uploaded_file.name, label, prob)
+
+                # Friendly display
                 pose_emoji = {
-                    "sitting": "🐶",
-                    "standing": "🦴",
-                    "lying": "🛏️",
+                    "sitting": "🧎‍♀️",
+                    "standing": "🧍‍♂️",
+                    "lying": "🛌",
                 }.get(label, "🐕")
 
-                st.markdown(
-                    f"### {pose_emoji} Predicted pose: **{label.title()}**"
-                )
+                st.markdown(f"### {pose_emoji} Predicted pose: **{label.title()}**")
                 st.write(f"Confidence: **{prob * 100:.1f}%**")
 
-                # Low-confidence warning
+                # Low-confidence note
                 threshold = 0.65
                 if prob < threshold:
                     st.warning(
@@ -311,160 +311,70 @@ def main():
                 elif label == "lying":
                     st.info("This usually indicates the dog is resting or relaxed.")
 
-                # Probabilities bar chart
+                # Class probabilities bar chart
                 st.subheader("Class probabilities")
-                prob_dict = {cls: float(p) for cls, p in zip(CLASS_NAMES, probs)}
+                prob_dict = {cls.title(): float(p) for cls, p in zip(CLASS_NAMES, probs)}
                 st.bar_chart(prob_dict)
 
                 # Optional raw numbers
                 with st.expander("See raw probability values"):
                     for cls, p in prob_dict.items():
-                        st.write(f"- **{cls.title()}**: {p * 100:.2f}%")
-        else:
-            st.info("👆 Upload a dog image above to get a prediction.")
+                        st.write(f"- **{cls}**: {p * 100:.2f}%")
 
-        # ===== Optional: Real-Time Evaluation Section (Predict tab only) =====
-        with st.expander("📡 Real-time evaluation (optional)", expanded=False):
-            st.caption(
-                "Turn this on if you want to log the *true* pose for each image and see "
-                "live accuracy, per-class F1, and a mini confusion matrix for this demo session."
-            )
+        # -------- Batch evaluation (optional) ----------
+        st.markdown("---")
+        st.subheader("Batch evaluation (optional)")
 
-            # Toggle for this session
-            st.session_state.eval_enabled = st.checkbox(
-                "Enable live evaluation for this session",
-                value=st.session_state.eval_enabled,
-            )
+        st.caption(
+            "Upload multiple images or a ZIP file of dog photos to run them all through the model. "
+            "Predictions will be added to the **Evaluation** tab."
+        )
 
-            if st.session_state.eval_enabled:
-                # Need a prediction first
-                if st.session_state.last_prediction is None:
-                    st.info("Upload an image and get a prediction first.")
-                else:
-                    lp = st.session_state.last_prediction
+        batch_files = st.file_uploader(
+            "Upload multiple images or a ZIP file",
+            type=["jpg", "jpeg", "png", "zip"],
+            accept_multiple_files=True,
+            key="batch_upload",
+        )
 
-                    st.markdown("### 📝 Log the true pose")
-
-                    col_true, col_button = st.columns([3, 1])
-
-                    with col_true:
-                        true_pose = st.selectbox(
-                            "True pose for this image:",
-                            CLASS_NAMES,
-                            index=None,
-                            placeholder="Select the correct pose...",
-                            key="true_pose_select",
-                        )
-
-                    with col_button:
-                        st.write("")  # vertical spacing
-                        st.write("")
-                        add_example = st.button("➕ Add example", key="add_eval_example")
-
-                    if add_example and true_pose:
-                        st.session_state.eval_records.append(
-                            {"true": true_pose, "pred": lp["label"]}
-                        )
-                        st.success(
-                            f"Example added: true = **{true_pose}**, "
-                            f"predicted = **{lp['label']}**"
-                        )
-
-                # If we have any logged examples, show live metrics
-                if st.session_state.eval_records:
-                    eval_df = pd.DataFrame(st.session_state.eval_records)
-
-                    # Overall accuracy
-                    live_acc = (eval_df["true"] == eval_df["pred"]).mean() * 100.0
-
-                    # Confusion matrix (using pandas crosstab)
-                    cm = pd.crosstab(
-                        eval_df["true"],
-                        eval_df["pred"],
-                        rownames=["True pose"],
-                        colnames=["Predicted pose"],
-                        dropna=False,
-                    )
-                    cm = cm.reindex(
-                        index=CLASS_NAMES, columns=CLASS_NAMES, fill_value=0
-                    )
-
-                    # Per-class F1-score from confusion matrix
-                    f1_rows = []
-                    for cls in CLASS_NAMES:
-                        tp = cm.loc[cls, cls]
-                        fp = cm[cls].sum() - tp
-                        fn = cm.loc[cls].sum() - tp
-
-                        if tp == 0 and fp == 0 and fn == 0:
-                            f1 = float("nan")  # no examples yet for this class
+        if batch_files:
+            run_batch = st.button("Run batch prediction", type="primary")
+            if run_batch:
+                n_images = 0
+                with st.spinner("Running batch predictions..."):
+                    for f in batch_files:
+                        filename = f.name.lower()
+                        if filename.endswith(".zip"):
+                            # Process ZIP archive
+                            try:
+                                zf = zipfile.ZipFile(io.BytesIO(f.read()))
+                                for name in zf.namelist():
+                                    if not name.lower().endswith((".jpg", ".jpeg", ".png")):
+                                        continue
+                                    try:
+                                        with zf.open(name) as img_file:
+                                            pil_img = Image.open(img_file)
+                                            label, prob, _ = predict_pose(model, pil_img)
+                                            add_prediction_to_log(f"{f.name}/{name}", label, prob)
+                                            n_images += 1
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                st.warning(f"Could not read ZIP file `{f.name}`.")
                         else:
-                            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-                            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-                            if precision == 0 and recall == 0:
-                                f1 = 0.0
-                            else:
-                                f1 = 2 * precision * recall / (precision + recall)
-                        f1_rows.append({"Pose": cls.title(), "F1-score": f1})
-
-                    f1_df = pd.DataFrame(f1_rows)
-
-                    st.markdown("### 📈 Live metrics (this session)")
-                    col_acc, col_n = st.columns(2)
-                    with col_acc:
-                        st.metric("Accuracy", f"{live_acc:.1f}%")
-                    with col_n:
-                        st.metric("Examples logged", len(eval_df))
-
-                    st.markdown("#### 🎯 Per-class F1-score")
-                    st.table(f1_df.style.format({"F1-score": "{:.3f}"}))
-
-                    st.markdown("#### 🧊 Mini confusion matrix")
-
-                    fig, ax = plt.subplots()
-                    im = ax.imshow(cm.values, cmap="Blues")
-
-                    ax.set_xticks(range(len(CLASS_NAMES)))
-                    ax.set_xticklabels([c.title() for c in CLASS_NAMES])
-                    ax.set_yticks(range(len(CLASS_NAMES)))
-                    ax.set_yticklabels([c.title() for c in CLASS_NAMES])
-
-                    # Annotate cells with counts
-                    for i in range(len(CLASS_NAMES)):
-                        for j in range(len(CLASS_NAMES)):
-                            ax.text(
-                                j,
-                                i,
-                                int(cm.values[i, j]),
-                                ha="center",
-                                va="center",
-                                color="black",
-                                fontsize=9,
-                            )
-
-                    ax.set_xlabel("Predicted")
-                    ax.set_ylabel("True")
-                    fig.tight_layout()
-                    st.pyplot(fig)
-
-                    st.markdown("")
-                    if st.button("♻️ Reset live evaluation for this session"):
-                        st.session_state.eval_records = []
-                        st.success("Live evaluation stats cleared.")
-                else:
-                    if st.session_state.eval_enabled:
-                        st.info(
-                            "Live evaluation is enabled, but no examples have been "
-                            "logged yet. Log at least one image to see live metrics."
-                        )
-            else:
-                st.caption(
-                    "Live evaluation is currently **off**. Turn it on if you want to "
-                    "collect feedback during a demo."
-                )
+                            # Single image file
+                            try:
+                                pil_img = Image.open(f)
+                                label, prob, _ = predict_pose(model, pil_img)
+                                add_prediction_to_log(f.name, label, prob)
+                                n_images += 1
+                            except Exception:
+                                st.warning(f"Skipping invalid image `{f.name}`.")
+                st.success(f"Batch prediction complete. Processed {n_images} image(s). "
+                           "See results in the **Evaluation** tab.")
 
     # =========================
-    # Model Insights Tab
+    # Model Insights tab
     # =========================
     with tab_insights:
         st.subheader("Validation performance")
@@ -510,7 +420,149 @@ def main():
             )
 
     # =========================
-    # Explanation Tab (Grad-CAM)
+    # Evaluation tab
+    # =========================
+    with tab_eval:
+        st.subheader("Prediction log & evaluation")
+
+        log = st.session_state.prediction_log
+        if not log:
+            st.info(
+                "No predictions have been logged yet. "
+                "Upload images in the **Predict Pose** tab to populate this table."
+            )
+        else:
+            df = pd.DataFrame(log)
+            df_display = df.copy()
+            df_display["pred"] = df_display["pred"].str.title()
+            if "true" in df_display.columns:
+                df_display["true"] = df_display["true"].fillna("—")
+                df_display["true"] = df_display["true"].str.title()
+
+            st.markdown("### 📄 Prediction log (this session)")
+            st.dataframe(
+                df_display[["id", "filename", "pred", "prob", "true"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.markdown("---")
+            st.markdown("### ✏️ Add or update true labels")
+
+            # Choose a row to label
+            selected_id = st.selectbox(
+                "Select a prediction to label:",
+                options=df["id"],
+                format_func=lambda i: f"#{i} — {df.loc[df['id']==i, 'filename'].iloc[0]} "
+                                      f"(pred: {df.loc[df['id']==i, 'pred'].iloc[0]})",
+            )
+
+            true_pose = st.selectbox(
+                "True pose:",
+                CLASS_NAMES,
+                key="eval_true_pose",
+            )
+
+            if st.button("Save label", key="save_true_label"):
+                for row in st.session_state.prediction_log:
+                    if row["id"] == selected_id:
+                        row["true"] = true_pose
+                        break
+                st.success(f"Saved true pose **{true_pose}** for prediction #{selected_id}.")
+
+            # ---------- Metrics from labeled examples ----------
+            labeled_df = pd.DataFrame(
+                [r for r in st.session_state.prediction_log if r["true"] is not None]
+            )
+
+            if labeled_df.empty:
+                st.info(
+                    "No true labels have been added yet. "
+                    "Once you label some predictions, live metrics will appear here."
+                )
+            else:
+                st.markdown("---")
+                st.markdown("### 📈 Metrics from labeled examples")
+
+                # Overall accuracy
+                acc = (labeled_df["true"] == labeled_df["pred"]).mean() * 100.0
+
+                col_acc, col_n = st.columns(2)
+                with col_acc:
+                    st.metric("Accuracy", f"{acc:.1f}%")
+                with col_n:
+                    st.metric("Labeled examples", len(labeled_df))
+
+                # Confusion matrix
+                cm = pd.crosstab(
+                    labeled_df["true"],
+                    labeled_df["pred"],
+                    rownames=["True pose"],
+                    colnames=["Predicted pose"],
+                    dropna=False,
+                )
+                cm = cm.reindex(index=CLASS_NAMES, columns=CLASS_NAMES, fill_value=0)
+
+                # Per-class F1-score
+                f1_rows = []
+                for cls in CLASS_NAMES:
+                    tp = cm.loc[cls, cls]
+                    fp = cm[cls].sum() - tp
+                    fn = cm.loc[cls].sum() - tp
+
+                    if tp == 0 and fp == 0 and fn == 0:
+                        f1 = float("nan")  # no examples yet for this class
+                    else:
+                        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+                        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+                        if precision == 0 and recall == 0:
+                            f1 = 0.0
+                        else:
+                            f1 = 2 * precision * recall / (precision + recall)
+                    f1_rows.append({"Pose": cls.title(), "F1-score": f1})
+
+                f1_df = pd.DataFrame(f1_rows)
+
+                st.markdown("#### 🎯 Per-class F1-score")
+                st.table(f1_df.style.format({"F1-score": "{:.3f}"}))
+
+                st.markdown("#### 🧊 Mini confusion matrix")
+
+                fig, ax = plt.subplots()
+                im = ax.imshow(cm.values, cmap="Blues")
+
+                ax.set_xticks(range(len(CLASS_NAMES)))
+                ax.set_xticklabels([c.title() for c in CLASS_NAMES])
+                ax.set_yticks(range(len(CLASS_NAMES)))
+                ax.set_yticklabels([c.title() for c in CLASS_NAMES])
+
+                # Annotate cells
+                for i in range(len(CLASS_NAMES)):
+                    for j in range(len(CLASS_NAMES)):
+                        ax.text(
+                            j,
+                            i,
+                            int(cm.values[i, j]),
+                            ha="center",
+                            va="center",
+                            color="black",
+                            fontsize=9,
+                        )
+
+                ax.set_xlabel("Predicted")
+                ax.set_ylabel("True")
+                fig.tight_layout()
+                st.pyplot(fig)
+
+                st.markdown("")
+                if st.button("♻️ Reset labeled data for this session"):
+                    # Keep predictions, just clear true labels
+                    for row in st.session_state.prediction_log:
+                        row["true"] = None
+                    st.success("All true labels cleared. Predictions remain in the log.")
+
+    # =========================
+    # Explanation tab (Grad-CAM)
     # =========================
     with tab_explain:
         st.subheader("How the model made its decision")
@@ -526,7 +578,7 @@ def main():
             if lp.get("image_bytes") is not None:
                 orig_img = Image.open(io.BytesIO(lp["image_bytes"])).convert("RGB")
             else:
-                st.error("No image bytes available from last prediction.")
+                st.error("No image data stored for the last prediction.")
                 st.stop()
 
             # Show original image + prediction
@@ -568,12 +620,9 @@ def main():
                 )
             except Exception as e:
                 st.error(f"Could not generate Grad-CAM explanation: {e}")
-            else:
-                if lp is None:
-                    st.info("No image available from the last prediction.")
 
     # =========================
-    # About Tab
+    # About tab
     # =========================
     with tab_about:
         st.subheader("About this Project")
@@ -585,6 +634,7 @@ def main():
             one of three poses: **sitting**, **standing**, or **lying**.
             """
         )
+
         st.markdown(
             """
             ### What this project demonstrates
