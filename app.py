@@ -393,39 +393,39 @@ def main():
                 )
             else:
                 st.info("No image available from the last prediction.")
+                
+                
+            with tab_about:
+                st.subheader("About this Project")
+                    
+                st.write("""
+                    This app is an end-to-end **computer vision project** that predicts a dog's
+                    pose from a single image. It uses a fine-tuned **ResNet18** model built
+                    with **PyTorch** and deployed with **Streamlit** to classify each image
+                    into one of three poses: **sitting**, **standing**, or **lying**.
+                """)
+                    
+                st.markdown("""
+                    ### What this project demonstrates
+                    
+                    - Building and training a deep learning model for image classification  
+                    - Preprocessing and normalizing image data for a ResNet-style backbone  
+                    - Interpreting model output through class probabilities and confidence scores  
+                    - Evaluating performance using validation accuracy, macro F1, and a confusion matrix  
+                    - Adding explainability with Grad-CAM to visualize where the model is focusing  
+                """)
+                    
+                st.markdown("""
+                    
+                    ### Why it matters
+                    
+                    This project showcases my ability to take a model from **idea → training → 
+                    evaluation → interactive deployment**. It reflects practical skills in
+                    **data science, machine learning, and model communication**, and serves as
+                    a portfolio example of how complex models can be turned into intuitive tools
+                    that non-technical users can explore directly in the browser.
+                """)
 
-
-    # ---- About Tab ----
-    with tab_about:
-        st.subheader("About this Project")
-        st.write("""
-            
-            This app is an end-to-end **computer vision project** that predicts a dog's
-            pose from a single image. It uses a fine-tuned **ResNet18** model built
-            with **PyTorch** and deployed with **Streamlit** to classify each image
-            into one of three poses: **sitting**, **standing**, or **lying**.
-        """)
-
-        st.markdown(
-            """
-            - Building and training a deep learning model for image classification  
-            - Preprocessing and normalizing image data for a ResNet-style backbone  
-            - Interpreting model output through class probabilities and confidence scores  
-            - Evaluating performance using validation accuracy, macro F1, and a confusion matrix  
-            - Adding explainability with Grad-CAM to visualize where the model is focusing  
-            
-        """)
-
-        st.markdown("""
-            
-              ### Why it matters
-              
-              This project showcases the ability to take a model from **idea → training → 
-              evaluation → interactive deployment**. It reflects practical skills in
-              **data science, machine learning, and model communication**, and serves as
-              a portfolio example of how complex models can be turned into intuitive tools
-              that non-technical users can explore in the browser.
-        """)
 
 
 if __name__ == "__main__":
