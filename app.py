@@ -10,7 +10,7 @@ import streamlit as st
 # Config & constants
 # -----------------
 
-CLASS_NAMES = ["sitting", "standing", "lying"]  # from your notebook
+CLASS_NAMES = ["sitting", "standing", "lying"]  # from colab notebook
 MODEL_PATH = "dog_pose_resnet18.pt"
 
 # Image transforms (standard ResNet18 / ImageNet-style)
@@ -82,18 +82,18 @@ def main():
     st.sidebar.title("🐶 About this app")
     st.sidebar.write(
         """
-        This app uses a **deep learning model (ResNet18)** you trained to
+        This app uses a **deep learning model (ResNet18)** to
         recognize a dog's pose from a photo.
         """
     )
     st.sidebar.markdown("### Poses I can detect")
     st.sidebar.write("- 🐕 **Sitting**\n- 🐕 **Standing**\n- 🐕 **Lying**")
 
-    st.sidebar.markdown("### How to use")
+    st.sidebar.markdown("### How to Use")
     st.sidebar.write(
         "1. Upload a clear photo of a dog.\n"
         "2. Wait for the model to run.\n"
-        "3. See the predicted pose and probabilities."
+        "3. Review the predicted results and probabilities."
     )
 
     st.sidebar.markdown("### Model details")
