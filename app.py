@@ -400,28 +400,32 @@ def main():
         st.subheader("About this Project")
         st.write(
             """
-            This app showcases a **computer vision classifier** built with 
-            **PyTorch** and a fine-tuned **ResNet18** model to predict a dog's
-            pose from an uploaded image. The model distinguishes between three 
-            categories: **sitting**, **standing**, and **lying**.
+            This app is an end-to-end **computer vision project** that predicts a dog's
+            pose from a single image. It uses a fine-tuned **ResNet18** model built
+            with **PyTorch** and deployed with **Streamlit** to classify each image
+            into one of three poses: **sitting**, **standing**, or **lying**.
             """
         )
 
         st.markdown(
             """
-            **What this project highlights:**
-            - How image classification models work  
-            - How model confidence scores are interpreted  
-            - How evaluation metrics can reveal strengths and weaknesses  
-            - How explainability tools like Grad-CAM help show what the model sees  
+            - Building and training a deep learning model for image classification  
+            - Preprocessing and normalizing image data for a ResNet-style backbone  
+            - Interpreting model output through class probabilities and confidence scores  
+            - Evaluating performance using validation accuracy, macro F1, and a confusion matrix  
+            - Adding explainability with Grad-CAM to visualize where the model is focusing  
             """
         )
 
         st.markdown(
             """
-            This app is part of a broader portfolio in data science and machine
-            learning, showcasing model deployment with **Streamlit**.
-            """
+              ### Why it matters
+              
+              This project showcases my ability to take a model from **idea → training → 
+              evaluation → interactive deployment**. It reflects practical skills in
+              **data science, machine learning, and model communication**, and serves as
+              a portfolio example of how complex models can be turned into intuitive tools
+              that non-technical users can explore in the browser.
         )
 
 
