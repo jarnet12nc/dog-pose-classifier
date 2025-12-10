@@ -31,6 +31,70 @@ TRANSFORM = transforms.Compose([
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# ========== Grad-CAM utilities ==========
+
+class GradCAM:
+    def __init__(self, model, target_layer):
+        self.model = model
+        self.target_layer = target_layer
+        self.gradients = None
+        self.activations = None
+
+        # Hook the layer to get activations and gradients
+        def forward_hook(module, input, output):
+            self.activations = output.detach()
+
+        def backward_hook(module, grad_input, grad_output):
+            self.gradients = grad_output[0].detach()
+
+        target_layer.register_forward_hook(forward_hook)
+        target_layer.register_backward_hook(backward_hook)
+
+    def generate(self, input_tensor, class_idx=None):
+        # Forward pass
+        logits = self.model(input_tensor)
+        probs = torch.softmax(logits, dim=1)
+
+        if class_idx is None:
+            class_idx = torch.argmax(probs)
+
+        # Backward pass
+        self.model.zero_grad()
+        logits[:, class_idx].backward()
+
+        # Compute weights and weighted sum of activations
+        weights = self.gradients.mean(dim=(2, 3), keepdim=True)
+        cam = (weights * self.activations).sum(dim=1).squeeze()
+
+        # Normalize CAM to [0,1]
+        cam = cam.cpu().numpy()
+        cam = np.maximum(cam, 0)
+        if cam.max() > 0:
+            cam = cam / cam.max()
+        return cam
+
+
+def overlay_heatmap_on_image(pil_img: Image.Image, heatmap: np.ndarray, alpha: float = 0.5):
+    """
+    Overlay a single-channel heatmap (values 0-1) on top of the original image.
+    Uses red channel to show high-importance regions.
+    """
+    img = np.array(pil_img.convert("RGB"))
+
+    # Resize heatmap to match image size
+    heatmap_uint8 = (heatmap * 255).astype(np.uint8)
+    heatmap_resized = np.array(
+        Image.fromarray(heatmap_uint8).resize((img.shape[1], img.shape[0]))
+    )
+
+    # Create a red heatmap image
+    heatmap_rgb = np.zeros_like(img)
+    heatmap_rgb[..., 0] = heatmap_resized  # red channel
+
+    # Blend original image with heatmap
+    overlay = (alpha * heatmap_rgb + (1 - alpha) * img).astype(np.uint8)
+    return Image.fromarray(overlay)
+
 
 # -----------------
 # Model & helpers
@@ -270,10 +334,10 @@ def main():
                 f"`{CONFUSION_MATRIX_PATH}` to show it here."
             )
 
-    # ---- Explanation Tab (Grad-CAM placeholder) ----
+# ---- Explanation Tab (Grad-CAM) ----
     with tab_explain:
-        st.subheader("Why did the model choose that pose?")
-
+        st.subheader("How the model made its decision")
+        
         lp = st.session_state.last_prediction
         if lp is None:
             st.info(
@@ -281,28 +345,55 @@ def main():
                 "explanation details here."
             )
         else:
-            st.write(
-                "Here you’ll be able to see what parts of the image the model focused on "
-                "when deciding the pose."
-            )
-
-            # Show the last image again
+        
+            # Rebuild the last image from bytes
             if lp.get("image_bytes") is not None:
-                img = Image.open(io.BytesIO(lp["image_bytes"]))
-                st.image(
-                    img,
-                    caption=f"Your image — predicted pose: {lp['label']}",
-                    use_container_width=True
-                )
-
-            st.markdown(
-                """
-               **Coming soon: model explanation features**
-               - Visualize important image regions with Grad-CAM  
-               - Understand what drives each pose prediction  
-               - Compare explanations across different uploaded images
-                """
+                orig_img = Image.open(io.BytesIO(lp["image_bytes"])).convert("RGB")
+               
+            # Show original image + prediction
+            st.subheader("Original image")
+            st.image(
+                orig_img,
+                caption=f"Your image — predicted pose: {lp['label']}",
+                use_container_width=True,
             )
+            
+            # Prepare tensor for Grad-CAM
+            input_tensor = preprocess_image(orig_img)  # uses your existing function
+
+            # Initialize Grad-CAM on the last ResNet18 conv block
+            gradcam = GradCAM(model, model.layer4[-1])
+
+            # Class index for predicted label
+            class_idx = CLASS_NAMES.index(lp["label"])
+            
+            # Generate heatmap
+            try:
+                heatmap = gradcam.generate(input_tensor, class_idx=class_idx)
+                
+                # Overlay heatmap on image
+                cam_overlay = overlay_heatmap_on_image(orig_img, heatmap, alpha=0.5)
+                
+                st.subheader("Model focus heatmap")
+                st.image(
+                    cam_overlay,
+                    caption=f"Grad-CAM explanation for predicted pose: {lp['label']}",
+                    use_container_width=True,
+                )
+                
+                st.markdown(
+                    """
+                    The highlighted (red) regions show where the model focused most
+                    when deciding this pose prediction.
+                    """
+                )
+            except Exception as e:
+                st.error(
+                    f"Could not generate Grad-CAM explanation: {e}"
+                )
+            else:
+                st.info("No image available from the last prediction.")
+
 
     # ---- About Tab ----
     with tab_about:
