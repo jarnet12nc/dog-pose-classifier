@@ -107,7 +107,7 @@ def main():
     st.title("🐕 Dog Pose Classifier")
     st.write(
         "Upload a dog photo and this app will predict if the dog is "
-        "**sitting**, **standing**, or **lying** using your trained model."
+        "**sitting**, **standing**, or **lying**."
     )
 
     model = load_model()
