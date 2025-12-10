@@ -1,172 +1,114 @@
-import numpy as np
-import streamlit as st
+import io
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from PIL import Image
 from torchvision import models, transforms
-import matplotlib.pyplot as plt
+from PIL import Image
+import streamlit as st
 
+# -----------------
+# Config & constants
+# -----------------
 
-# ===========================
-# CONFIG
-# ===========================
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+CLASS_NAMES = ["sitting", "standing", "lying"]  # from your notebook
 MODEL_PATH = "dog_pose_resnet18.pt"
 
-POSE_CLASSES = ["sitting", "standing", "lying"]
-
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
-
-eval_transform = transforms.Compose([
-    transforms.Resize((256, 256)),
-    transforms.CenterCrop((224, 224)),
+# Image transforms (standard ResNet18 / ImageNet-style)
+TRANSFORM = transforms.Compose([
+    transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],  # ImageNet stats
+        std=[0.229, 0.224, 0.225]
+    )
 ])
 
-
-# ===========================
-# MODEL DEFINITION
-# ===========================
-def build_model(num_classes=3):
-    model = models.resnet18(weights=None)
-    in_feats = model.fc.in_features
-    model.fc = nn.Linear(in_feats, num_classes)
-    return model
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-@st.cache_resource(show_spinner="Loading pose classification model...")
+# -----------------
+# Model loading
+# -----------------
+
+@st.cache_resource
 def load_model():
-    model = build_model(num_classes=len(POSE_CLASSES)).to(DEVICE)
+    # Build a ResNet18 with 3 output classes
+    model = models.resnet18(weights=None)  # use architecture only
+    num_ftrs = model.fc.in_features
+    model.fc = nn.Linear(num_ftrs, len(CLASS_NAMES))
 
-    state = torch.load(MODEL_PATH, map_location=DEVICE)
-    if isinstance(state, dict) and "state_dict" in state:
-        state = state["state_dict"]
+    # Load state dict
+    state_dict = torch.load(MODEL_PATH, map_location="cpu")
+    model.load_state_dict(state_dict)
 
-    model.load_state_dict(state)
+    model.to(DEVICE)
     model.eval()
     return model
 
 
-model = load_model()
+def preprocess_image(pil_img: Image.Image) -> torch.Tensor:
+    if pil_img.mode != "RGB":
+        pil_img = pil_img.convert("RGB")
+    tensor = TRANSFORM(pil_img).unsqueeze(0)  # add batch dim
+    return tensor.to(DEVICE)
 
 
-# ===========================
-# GRAD-CAM IMPLEMENTATION
-# ===========================
-class GradCAM:
-    def __init__(self, model, target_layer):
-        self.model = model
-        self.gradients = None
-        self.activations = None
-
-        target_layer.register_forward_hook(self.save_activation)
-        target_layer.register_full_backward_hook(self.save_gradient)
-
-    def save_activation(self, module, inp, out):
-        self.activations = out.detach()
-
-    def save_gradient(self, module, grad_in, grad_out):
-        self.gradients = grad_out[0].detach()
-
-    def generate(self, x, class_idx):
-        self.model.zero_grad()
-        outputs = model(x)
-        score = outputs[0, class_idx]
-        score.backward(retain_graph=True)
-
-        acts = self.activations[0]       # [C, H, W]
-        grads = self.gradients[0]        # [C, H, W]
-        weights = grads.mean(dim=(1, 2))  # GAP over H,W
-
-        cam = torch.zeros_like(acts[0])
-        for c, w in enumerate(weights):
-            cam += w * acts[c]
-
-        cam = cam.cpu().numpy()
-        cam = np.maximum(cam, 0)
-        cam = cam / cam.max() if cam.max() > 0 else cam
-        return cam
-
-
-target_layer = model.layer4[-1]       # last conv block of ResNet18
-gradcam = GradCAM(model, target_layer)
-
-
-def overlay_cam(img_pil, cam, alpha=0.45):
-    img = np.array(img_pil).astype(np.float32) / 255.0
-    H, W, _ = img.shape
-
-    cam_t = torch.tensor(cam)[None, None, :, :]
-    cam_resized = torch.nn.functional.interpolate(
-        cam_t, size=(H, W), mode="bilinear", align_corners=False
-    )[0, 0].numpy()
-
-    cam_resized = np.clip(cam_resized, 0, 1)
-    heatmap = plt.cm.jet(cam_resized)[..., :3]
-
-    overlay = (1 - alpha) * img + alpha * heatmap
-    overlay = np.clip(overlay, 0, 1)
-    return (overlay * 255).astype(np.uint8)
-
-
-# ===========================
-# INFERENCE
-# ===========================
-def predict_pose(img_pil):
-    x = eval_transform(img_pil).unsqueeze(0).to(DEVICE)
-
+def predict_pose(model: nn.Module, pil_img: Image.Image):
+    tensor = preprocess_image(pil_img)
     with torch.no_grad():
-        logits = model(x)
-        probs = F.softmax(logits, dim=1)[0].cpu().numpy()
+        logits = model(tensor)
+        probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
 
-    pred_idx = int(np.argmax(probs))
-    pred_label = POSE_CLASSES[pred_idx]
-
-    cam = gradcam.generate(x, pred_idx)
-    overlay = overlay_cam(img_pil, cam)
-
-    return pred_label, probs, overlay
+    # Get top prediction
+    top_idx = int(probs.argmax())
+    top_label = CLASS_NAMES[top_idx]
+    top_prob = float(probs[top_idx])
+    return top_label, top_prob, probs
 
 
-# ===========================
-# STREAMLIT UI
-# ===========================
-st.set_page_config(page_title="Dog Pose Classifier", layout="wide")
+# -----------------
+# Streamlit UI
+# -----------------
 
-st.title("🐶 Dog Pose Classifier (ResNet18)")
-st.write(
-    "Upload an image of a dog and the model will predict whether it is:\n"
-    "- **sitting**\n"
-    "- **standing**\n"
-    "- **lying**\n\n"
-    "Grad-CAM heatmaps highlight the regions the model used."
-)
+def main():
+    st.set_page_config(
+        page_title="Dog Pose Classifier",
+        page_icon="🐕",
+        layout="centered"
+    )
 
-uploaded = st.file_uploader("Upload a dog image", type=["jpg", "jpeg", "png"])
+    st.title("🐕 Dog Pose Classifier")
+    st.write(
+        "Upload a dog image and this app will predict whether the dog is "
+        "**sitting**, **standing**, or **lying** using your ResNet18 model."
+    )
 
-if uploaded:
-    img = Image.open(uploaded).convert("RGB")
-    st.image(img, caption="Uploaded Image", use_column_width=True)
+    model = load_model()
 
-    with st.spinner("Predicting pose..."):
-        label, probs, overlay = predict_pose(img)
+    uploaded_file = st.file_uploader(
+        "Upload a dog image (JPG/PNG)", type=["jpg", "jpeg", "png"]
+    )
 
-    col1, col2 = st.columns(2)
+    if uploaded_file is not None:
+        # Read and display image
+        image_bytes = uploaded_file.read()
+        pil_img = Image.open(io.BytesIO(image_bytes))
 
-    with col1:
-        st.subheader("Prediction")
-        st.markdown(f"### **Pose: {label}**")
+        st.subheader("Input image")
+        st.image(pil_img, use_container_width=True)
 
-        st.write("### Probabilities:")
-        for c, p in zip(POSE_CLASSES, probs):
-            st.write(f"- **{c}** — {p:.3f}")
+        if st.button("Classify pose"):
+            with st.spinner("Analyzing pose..."):
+                label, prob, probs = predict_pose(model, pil_img)
 
-    with col2:
-        st.subheader("Grad-CAM Heatmap")
-        st.image(overlay, caption="Model Attention Heatmap", use_column_width=True)
+            st.success(f"Predicted pose: **{label}** ({prob * 100:.1f}% confidence)")
 
-else:
-    st.info("Upload an image to begin.")
+            st.subheader("Class probabilities")
+            for cls, p in zip(CLASS_NAMES, probs):
+                st.write(f"- **{cls}**: {p * 100:.1f}%")
+
+    else:
+        st.info("👆 Upload an image above to get started.")
+
+
+if __name__ == "__main__":
+    main()
