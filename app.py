@@ -9,6 +9,7 @@ import torch.nn as nn
 from torchvision import models, transforms
 from PIL import Image
 import streamlit as st
+import matplotlib.pyplot as plt
 
 # -----------------
 # Config & constants
@@ -205,6 +206,13 @@ def main():
     if "last_prediction" not in st.session_state:
         st.session_state.last_prediction = None
 
+        # Live evaluation state (optional real-time metrics)
+    if "eval_records" not in st.session_state:
+        st.session_state.eval_records = []  # list of {"true": ..., "pred": ...}
+
+    if "eval_enabled" not in st.session_state:
+        st.session_state.eval_enabled = False
+
     # ---- Predict Pose Tab ----
     with tab_predict:
         uploaded_file = st.file_uploader(
@@ -283,6 +291,150 @@ def main():
                         st.write(f"- **{cls}**: {p * 100:.2f}%")
         else:
             st.info("👆 Upload a dog image above to get a prediction.")
+            
+        # ---- Optional: Real-Time Evaluation Section ----
+        # ---- Optional: Real-Time Evaluation Section ----
+    with st.expander("📡 Real-time evaluation (optional)", expanded=False):
+        st.caption(
+            "Turn this on if you want to log the *true* pose for each image "
+            "and see live accuracy, per-class F1, and a mini confusion matrix "
+            "for this demo session."
+        )
+
+        # Toggle for this session
+        st.session_state.eval_enabled = st.checkbox(
+            "Enable live evaluation for this session",
+            value=st.session_state.eval_enabled,
+        )
+
+        if st.session_state.eval_enabled:
+            # Need a prediction first
+            if st.session_state.last_prediction is None:
+                st.info("Upload an image and get a prediction first.")
+            else:
+                lp = st.session_state.last_prediction
+
+                st.markdown("### 📝 Log the true pose")
+
+                col_true, col_button = st.columns([3, 1])
+
+                with col_true:
+                    true_pose = st.selectbox(
+                        "True pose for this image:",
+                        CLASS_NAMES,
+                        index=None,
+                        placeholder="Select the correct pose...",
+                        key="true_pose_select",
+                    )
+
+                with col_button:
+                    st.write("")  # vertical spacing
+                    st.write("")
+                    add_example = st.button("➕ Add example", key="add_eval_example")
+
+                if add_example and true_pose:
+                    st.session_state.eval_records.append(
+                        {"true": true_pose, "pred": lp["label"]}
+                    )
+                    st.success(
+                        f"Example added: true = **{true_pose}**, "
+                        f"predicted = **{lp['label']}**"
+                    )
+
+            # If we have any logged examples, show live metrics
+            if st.session_state.eval_records:
+                eval_df = pd.DataFrame(st.session_state.eval_records)
+
+                # Overall accuracy
+                live_acc = (eval_df["true"] == eval_df["pred"]).mean() * 100.0
+
+                # Confusion matrix (using pandas crosstab)
+                cm = pd.crosstab(
+                    eval_df["true"],
+                    eval_df["pred"],
+                    rownames=["True pose"],
+                    colnames=["Predicted pose"],
+                    dropna=False,
+                )
+                cm = cm.reindex(index=CLASS_NAMES, columns=CLASS_NAMES, fill_value=0)
+
+                # Per-class F1-score from confusion matrix
+                f1_rows = []
+                for cls in CLASS_NAMES:
+                    tp = cm.loc[cls, cls]
+                    fp = cm[cls].sum() - tp
+                    fn = cm.loc[cls].sum() - tp
+
+                    if tp == 0 and fp == 0 and fn == 0:
+                        f1 = float("nan")  # no examples yet for this class
+                    else:
+                        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+                        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+                        if precision == 0 and recall == 0:
+                            f1 = 0.0
+                        else:
+                            f1 = 2 * precision * recall / (precision + recall)
+                    f1_rows.append({"Pose": cls.title(), "F1-score": f1})
+
+                f1_df = pd.DataFrame(f1_rows)
+
+                st.markdown("### 📈 Live metrics (this session)")
+                col_acc, col_n = st.columns(2)
+                with col_acc:
+                    st.metric("Accuracy", f"{live_acc:.1f}%")
+                with col_n:
+                    st.metric("Examples logged", len(eval_df))
+
+                st.markdown("#### 🎯 Per-class F1-score")
+                st.table(f1_df.style.format({"F1-score": "{:.3f}"}))
+
+                st.markdown("#### 🧊 Mini confusion matrix")
+
+                fig, ax = plt.subplots()
+                im = ax.imshow(cm.values, cmap="Blues")
+
+                ax.set_xticks(range(len(CLASS_NAMES)))
+                ax.set_xticklabels([c.title() for c in CLASS_NAMES])
+                ax.set_yticks(range(len(CLASS_NAMES)))
+                ax.set_yticklabels([c.title() for c in CLASS_NAMES])
+
+                # Annotate cells with counts
+                for i in range(len(CLASS_NAMES)):
+                    for j in range(len(CLASS_NAMES)):
+                        ax.text(
+                            j,
+                            i,
+                            int(cm.values[i, j]),
+                            ha="center",
+                            va="center",
+                            color="black",
+                            fontsize=9,
+                        )
+
+                ax.set_xlabel("Predicted")
+                ax.set_ylabel("True")
+                fig.tight_layout()
+                st.pyplot(fig)
+
+                st.markdown("")
+                if st.button("♻️ Reset live evaluation for this session"):
+                    st.session_state.eval_records = []
+                    st.success("Live evaluation stats cleared.")
+            else:
+                if st.session_state.eval_enabled:
+                    st.info(
+                        "Live evaluation is enabled, but no examples have been logged yet. "
+                        "Log at least one image to see live metrics."
+                    )
+        else:
+            st.caption(
+                "Live evaluation is currently **off**. Turn it on if you want to "
+                "collect feedback during a demo."
+            )
+
+    
+    
+
 
     # ---- Model Insights Tab ----
     with tab_insights:
