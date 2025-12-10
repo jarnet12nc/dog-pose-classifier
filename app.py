@@ -421,7 +421,7 @@ def main():
             """
               ### Why it matters
               
-              This project showcases my ability to take a model from **idea → training → 
+              This project showcases the ability to take a model from **idea → training → 
               evaluation → interactive deployment**. It reflects practical skills in
               **data science, machine learning, and model communication**, and serves as
               a portfolio example of how complex models can be turned into intuitive tools
